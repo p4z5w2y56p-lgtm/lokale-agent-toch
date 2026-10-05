@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from agent_trader.config import Config, Limits, Stage
+from agent_trader.config import Config, Stage
 from agent_trader.killswitch import KillSwitch
 from agent_trader.models import PortfolioView, Side, TradeProposal
 from agent_trader.policy import PolicyEngine

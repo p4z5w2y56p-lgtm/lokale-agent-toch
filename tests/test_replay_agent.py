@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from agent_trader.agent import LLMAgent, MomentumBaseline, Observation, parse_trades
 from agent_trader.llm import AnthropicLLM
-from agent_trader.config import Config, Limits
+from agent_trader.config import Config
 from agent_trader.data import synthetic
 from agent_trader.killswitch import KillSwitch
 from agent_trader.models import PortfolioView, Side, TradeProposal

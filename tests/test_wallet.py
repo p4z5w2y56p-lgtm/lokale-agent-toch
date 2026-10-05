@@ -7,11 +7,11 @@ from agent_trader.signer import MAX_TX_ETH, SignerError, TestnetSettings, Testne
 
 
 class FakeFn:
-    def __init__(self, name):
-        self.name = name
+    def __init__(self, name, to=None):
+        self.name, self.to = name, to
 
     def build_transaction(self, base):
-        return {**base, "data": self.name}
+        return {**base, "to": self.to, "data": self.name}
 
     def call(self):
         return 5 * 10**17
@@ -23,10 +23,10 @@ class FakeEth:
         self.sent = []
 
     def contract(self, address, abi):
-        fns = SimpleNamespace(deposit=lambda: FakeFn("deposit"),
-                              withdraw=lambda wad: FakeFn(f"withdraw:{wad}"),
+        fns = SimpleNamespace(deposit=lambda: FakeFn("deposit", address),
+                              withdraw=lambda wad: FakeFn(f"withdraw:{wad}", address),
                               balanceOf=lambda a: FakeFn("bal"))
-        return SimpleNamespace(functions=fns)
+        return SimpleNamespace(address=address, functions=fns)
 
     def get_balance(self, a):
         return 10**18
@@ -120,3 +120,13 @@ def test_load_dotenv(tmp_path, monkeypatch):
     assert "EMPTY_T" not in os.environ and os.environ["KEEP_T"] == "env"
     for k in ("FOO_T", "BAR_T"):
         monkeypatch.delenv(k)
+
+
+
+def test_send_refuses_value_over_cap_or_foreign_destination():
+    w = wallet()
+    with pytest.raises(SignerError):
+        w.send(w.build_wrap(0.001) | {"value": 10**18})
+    with pytest.raises(SignerError):
+        w.send(w.build_wrap(0.001) | {"to": "0x000000000000000000000000000000000000dEaD"})
+    assert w.w3.eth.sent == []
