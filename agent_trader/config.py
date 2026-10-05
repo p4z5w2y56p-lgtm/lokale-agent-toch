@@ -44,8 +44,8 @@ class Config:
     stage: Stage = Stage.REPLAY
     limits: Limits = field(default_factory=Limits)
     starting_cash: float = 1000.0
-    fee_bps: float = 30.0              # typical DEX pool fee (0.30%)
-    slippage_bps: float = 10.0         # simulated slippage in the paper broker
+    fee_bps: float = 10.0              # ~0.10%: CEX taker fee, or a low-fee DEX pool (Uniswap v3 0.05-0.30%)
+    slippage_bps: float = 5.0          # simulated slippage on liquid pairs (ETH, BTC) at small size
     mainnet_unlocked: bool = False
 
 

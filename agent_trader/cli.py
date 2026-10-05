@@ -1,4 +1,4 @@
-"""Command line: replay, fetch, wallet, status, kill, unkill."""
+"""Command line: replay, paper, fetch, budget, wallet, status, kill, unkill."""
 from __future__ import annotations
 
 import argparse
@@ -35,6 +35,7 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     except ConfigError as exc:
         print(f"Config refused: {exc}", file=sys.stderr)
         return 2
+    config = _with_costs(config, args)
     candles = _build_candles(args)
     if args.agent == "claude":
         if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -42,7 +43,10 @@ def _cmd_replay(args: argparse.Namespace) -> int:
             return 2
         import anthropic
 
-        llm = AnthropicLLM(anthropic.Anthropic(), os.environ.get("AGENT_MODEL", "claude-haiku-4-5-20251001"))
+        from .budget import BudgetMeter
+
+        llm = AnthropicLLM(anthropic.Anthropic(), os.environ.get("AGENT_MODEL", "claude-haiku-4-5-20251001"),
+                           budget=BudgetMeter())
         agent = LLMAgent(llm=llm, decide_every=args.decide_every)
     elif args.agent == "gemini":
         if not os.environ.get("GEMINI_API_KEY"):
@@ -57,12 +61,19 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     if args.holdout:
         train, test = split(candles, args.holdout)
         print("=== TRAIN (tune the playbook on this) ===")
-        _report(args, config, agent, run_replay(train, agent, config, killswitch, Journal(args.journal)).scorecard)
+        _report(args, config, agent, run_replay(train, agent, config, killswitch, Journal(args.journal)))
         print("\n=== TEST (never tuned on: this is the number that counts) ===")
         agent = _fresh(agent)
-        return _report(args, config, agent, run_replay(test, agent, config, killswitch, Journal(args.journal)).scorecard)
-    result = run_replay(candles, agent, config, killswitch, Journal(args.journal))
-    return _report(args, config, agent, result.scorecard)
+        return _report(args, config, agent, run_replay(test, agent, config, killswitch, Journal(args.journal)))
+    return _report(args, config, agent, run_replay(candles, agent, config, killswitch, Journal(args.journal)))
+
+
+def _with_costs(config, args):
+    from dataclasses import replace
+
+    changes = {k: v for k, v in (("fee_bps", getattr(args, "fee_bps", None)),
+                                 ("slippage_bps", getattr(args, "slippage_bps", None))) if v is not None}
+    return replace(config, **changes) if changes else config
 
 
 def _fresh(agent):
@@ -72,7 +83,8 @@ def _fresh(agent):
     return type(agent)()
 
 
-def _report(args, config, agent, card) -> int:
+def _report(args, config, agent, result) -> int:
+    card = result.scorecard
     print(f"Agent: {args.agent}   Stage: {config.stage.name}   Steps: {card.steps}")
     print(f"Return:        {card.total_return:+.2%}")
     print(f"Buy-and-hold:  {card.buy_hold_return:+.2%}")
@@ -81,6 +93,8 @@ def _report(args, config, agent, card) -> int:
     print(f"Trades:        {card.trades}   Win rate: "
           f"{'n/a' if card.win_rate is None else f'{card.win_rate:.0%}'}")
     print(f"Rejected:      {card.proposals_rejected}/{card.proposals_total} proposals")
+    print(f"Fees paid:     {sum(f.fee for f in result.fills):.2f}   "
+          f"(fee {config.fee_bps:g} bps, slippage {config.slippage_bps:g} bps)")
     if getattr(agent, "last_error", None):
         print(f"Agent error:   {agent.last_error}")
     promo = check_promotion(config.stage, card)
@@ -104,6 +118,47 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
         path = f"{args.out}/{sym.lower()}_{args.interval}.csv"
         save_csv(candles, path)
         print(f"{sym}: {len(candles)} candles -> {path}")
+    return 0
+
+
+def _cmd_paper(args: argparse.Namespace) -> int:
+    from .paper_live import PaperLive, PriceSourceError, binance_source
+
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        print(f"Config refused: {exc}", file=sys.stderr)
+        return 2
+    config = _with_costs(config, args)
+    if args.agent != "baseline":
+        print("paper currently runs the baseline agent only (no paid LLM calls).", file=sys.stderr)
+        return 2
+    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    live = PaperLive(MomentumBaseline(), config, symbols, binance_source, journal=Journal(args.journal))
+
+    def show(s: dict) -> None:
+        px = "  ".join(f"{k} {v:,.2f}" for k, v in s["prices"].items())
+        print(f"bar {s['ts']}  {px}  equity {s['equity']:.2f}  fills {s['fills']}  "
+              f"rejected {s['rejected']}{'' if s['new_bar'] else '  (no new bar)'}")
+
+    try:
+        live.run(1 if args.once else args.max_ticks, interval_s=args.interval, on_tick=show)
+    except PriceSourceError as exc:
+        print(f"Live prices unavailable: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("Stopped.")
+    print(f"Fees paid: {live.fees_paid:.2f}   Journal: {args.journal}")
+    return 0
+
+
+def _cmd_budget(_: argparse.Namespace) -> int:
+    from .budget import BudgetMeter
+
+    m = BudgetMeter()
+    pct = m.spent_eur / m.cap_eur if m.cap_eur > 0 else 0.0
+    print(f"LLM budget: EUR {m.spent_eur:.4f} of {m.cap_eur:.2f} ({pct:.0%})   "
+          f"calls {m.state['calls']}   file {m.path}")
     return 0
 
 
@@ -188,7 +243,22 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--journal", default="runs/journal.jsonl")
     r.add_argument("--holdout", type=float, default=0.0,
                    help="fraction of the newest data kept for an out-of-sample test, e.g. 0.3")
+    r.add_argument("--fee-bps", type=float, help="override the fee per trade, in basis points")
+    r.add_argument("--slippage-bps", type=float, help="override simulated slippage, in basis points")
     r.set_defaults(fn=_cmd_replay)
+
+    pp = sub.add_parser("paper", help="paper trade on live public hourly prices (fake money)")
+    pp.add_argument("--agent", choices=["baseline"], default="baseline")
+    pp.add_argument("--symbols", default="ETH,WBTC")
+    pp.add_argument("--once", action="store_true", help="one tick, then exit")
+    pp.add_argument("--max-ticks", type=int, default=24)
+    pp.add_argument("--interval", type=float, default=300.0, help="seconds between polls")
+    pp.add_argument("--journal", default="runs/paper_journal.jsonl")
+    pp.add_argument("--fee-bps", type=float)
+    pp.add_argument("--slippage-bps", type=float)
+    pp.set_defaults(fn=_cmd_paper)
+
+    sub.add_parser("budget", help="show LLM spend vs cap").set_defaults(fn=_cmd_budget)
 
     f = sub.add_parser("fetch", help="download real hourly candles (public Binance data, no key)")
     f.add_argument("--symbols", default="ETH,WBTC")
