@@ -42,7 +42,7 @@ def _cmd_replay(args: argparse.Namespace) -> int:
             return 2
         import anthropic
 
-        llm = AnthropicLLM(anthropic.Anthropic(), os.environ.get("AGENT_MODEL", "claude-sonnet-5-5"))
+        llm = AnthropicLLM(anthropic.Anthropic(), os.environ.get("AGENT_MODEL", "claude-haiku-4-5-20251001"))
         agent = LLMAgent(llm=llm, decide_every=args.decide_every)
     elif args.agent == "gemini":
         if not os.environ.get("GEMINI_API_KEY"):
