@@ -19,14 +19,20 @@ class AnthropicLLM:
     client: Any                      # anthropic.Anthropic() or a fake
     model: str = "claude-haiku-4-5-20251001"
     max_tokens: int = 600
+    usage: Any = None                # optional UsageTracker: logs cost, hard-stops at the cap
+    tag: str = ""
 
     def __call__(self, system: str, user: str) -> str:
+        if self.usage is not None:
+            self.usage.check()
         msg = self.client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
+        if self.usage is not None and getattr(msg, "usage", None) is not None:
+            self.usage.record(self.model, msg.usage.input_tokens, msg.usage.output_tokens, self.tag)
         return "".join(getattr(b, "text", "") for b in msg.content)
 
 
