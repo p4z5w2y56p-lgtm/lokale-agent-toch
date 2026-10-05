@@ -19,15 +19,22 @@ class AnthropicLLM:
     client: Any                      # anthropic.Anthropic() or a fake
     model: str = "claude-haiku-4-5-20251001"
     max_tokens: int = 600
+    budget: Any = None               # optional budget.BudgetMeter
 
     def __call__(self, system: str, user: str) -> str:
+        if self.budget is not None:
+            self.budget.check()
         msg = self.client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        return "".join(getattr(b, "text", "") for b in msg.content)
+        text = "".join(getattr(b, "text", "") for b in msg.content)
+        usage = getattr(msg, "usage", None)
+        if self.budget is not None and usage is not None:
+            self.budget.record(getattr(usage, "input_tokens", 0) or 0, getattr(usage, "output_tokens", 0) or 0)
+        return text
 
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
