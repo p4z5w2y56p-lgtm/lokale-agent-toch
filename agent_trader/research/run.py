@@ -173,8 +173,9 @@ def _hypothesis(t: Tuned, tuned: dict[str, Tuned], bh_dev: Metrics) -> str:
     if t.key == "S2":
         s1 = tuned["S1"].dev
         better = [p for p, r in t.results.items() if r.sharpe > s1.sharpe and r.worst_month > s1.worst_month]
-        found = ", ".join(_params(dict(zip(t.grid, p))) for p in better) or "none"
-        return (f"Grid points that beat frozen S1 on both dev Sharpe ({s1.sharpe:.2f}) and dev worst month "
+        found = "; ".join(f"({_params(dict(zip(t.grid, p)))}: Sharpe {t.results[p].sharpe:.3f}, worst month "
+                          f"{_p(t.results[p].worst_month)})" for p in better) or "none"
+        return (f"Grid points that beat frozen S1 on both dev Sharpe ({s1.sharpe:.3f}) and dev worst month "
                 f"({_p(s1.worst_month)}): {found}. "
                 + ("Vol scaling adds value on dev." if better else "FALSIFIED: vol scaling adds nothing on dev."))
     if t.key == "S3":
@@ -217,15 +218,17 @@ def _report(m: Market, source: str, tuned: list[Tuned], bh_dev: Metrics, ref_dev
         "",
         "## Verdict",
         "",
-        "| Strategy | Frozen settings (picked on dev) | Dev gate | Holdout success bar |",
-        "|---|---|---|---|",
+        "| Strategy | Frozen settings (picked on dev) | Dev gate | Failed dev checks | Holdout success bar |",
+        "|---|---|---|---|---|",
     ]
     for t in tuned:
         if t.bar is None:
             hold = "not run (failed the dev gate)"
         else:
             hold = f"{verdict(t.bar)} ({sum(c.ok for c in t.bar)}/5)"
-        L.append(f"| {t.key} {t.title} | {_params(t.params)} | {'PASS' if t.passed_gate else 'FAILED-DEV'} | {hold} |")
+        fails = "; ".join(f"{c.name} ({c.detail})" for c in t.gate if not c.ok) or "none"
+        L.append(f"| {t.key} {t.title} | {_params(t.params)} | {'PASS' if t.passed_gate else 'FAILED-DEV'} "
+                 f"| {fails} | {hold} |")
     L += ["", ("**Workflow verdict: SUCCESS.** " + ", ".join(t.key for t in passed)
                + " passed the holdout success bar; next step is 3+ months of unchanged live paper trading.")
           if passed else
@@ -296,7 +299,7 @@ def _report(m: Market, source: str, tuned: list[Tuned], bh_dev: Metrics, ref_dev
     ran = [t for t in tuned if t.holdout is not None]
     if not ran:
         L += ["No strategy passed the dev gate, so no strategy ran on holdout. Reference rows only:", ""]
-        L += _metric_table([("B&H 50/50", bh_hold), ("REF-SMA336", ref_hold)])
+        L += _metric_table([("B&H 50/50", bh_hold), ("REF-SMA336", ref_hold)]) + [""]
     for t in ran:
         L += [f"### {t.key} {t.title} ({_params(t.params)}): **{verdict(t.bar)}** "
               f"({sum(c.ok for c in t.bar)}/5)", ""]
@@ -316,7 +319,21 @@ def _report(m: Market, source: str, tuned: list[Tuned], bh_dev: Metrics, ref_dev
             rows.append((f"{t.key} {_params(t.params)} all bars", t.full_hashes))
     L += [f"| {name} | `{a}` | `{b}` | {'yes' if a == b else 'NO'} |" for name, (a, b) in rows]
     L += ["", "Every all-bars run was also checked to equal its dev-only run on every dev bar (equity marks and "
-          "fills), a no-lookahead check on the real data.", ""]
+          "fills), a no-lookahead check on the real data.", "",
+          "## Readings of the plan where it left room (none touches the scored periods' rules)", "",
+          "- A complete UTC day needs its 00:00 and 23:00 bars, so the partial first day (2022-08-27, from 19:00) "
+          "is not a daily bar; this only moves the first warm-up decision by one day.",
+          "- S4 starts ON on the first day its window is full and checks transitions from the next day (warm-up).",
+          "- The 0.05 trade threshold and order sizes use prices at the fill bar's open; target weights use "
+          "data up to the decision bar's close only.",
+          "- S3 rotation check: falsified when neither T=0.75 nor T=1.0 beats T=0.5 on dev Sharpe at the "
+          "selected lookback (both comparisons are printed).",
+          "- Strategy-specific falsification checks are reported, but only the dev gate decides who runs on holdout.",
+          "- REF-SMA336 and B&H have no settings to tune, so their holdout rows are shown even when no "
+          "strategy reaches holdout.",
+          "- CAGR uses 365-day years; months are positive at >= +0.25%, flat within +/-0.25%, negative at <= -0.25%.",
+          "- Not changed (follow-ups): `replay.py` still fills the LLM agent at the decision bar's close, and "
+          "`PolicyEngine` caps still apply there; research runs bypass both.", ""]
     return "\n".join(L)
 
 
