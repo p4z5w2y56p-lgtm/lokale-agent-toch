@@ -55,6 +55,29 @@ python -m agent_trader status
 
 CSV format: `ts,open,high,low,close,volume`.
 
+Real data and an honest test:
+
+```bash
+python -m agent_trader fetch                       # 1 year of hourly ETH/BTC from Binance, no key
+python -m agent_trader replay --csv data/eth_1h.csv,data/wbtc_1h.csv --holdout 0.3
+```
+
+`--holdout 0.3` tunes on the oldest 70% and reports the newest 30% separately. Only the TEST
+number counts.
+
+Testnet wallet (stage 2, Base Sepolia only, max 0.01 ETH per transaction):
+
+```bash
+pip install -e ".[testnet]"
+# .env: AGENT_STAGE=2, RPC_URL=..., CHAIN_ID=84532, SIGNER_PRIVATE_KEY=<throwaway wallet>
+python -m agent_trader wallet status               # address + ETH/WETH balance
+python -m agent_trader wallet wrap --amount 0.001  # dry run
+python -m agent_trader wallet wrap --amount 0.001 --send
+```
+
+The wallet checks the chain twice (CHAIN_ID and what the RPC node reports) and refuses any
+mainnet.
+
 Every run writes `runs/journal.jsonl`: each trade, each refusal and why, and the scorecard.
 
 ## How the agent gets "trained"

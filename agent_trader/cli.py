@@ -1,4 +1,4 @@
-"""Command line: replay, fetch, status, kill, unkill."""
+"""Command line: replay, fetch, wallet, status, kill, unkill."""
 from __future__ import annotations
 
 import argparse
@@ -107,6 +107,36 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_wallet(args: argparse.Namespace) -> int:
+    from .signer import SignerError, TestnetWallet
+
+    if KillSwitch().engaged() and args.action != "status":
+        print("Kill switch is ENGAGED. Refusing.", file=sys.stderr)
+        return 2
+    try:
+        config = load_config()
+        wallet = TestnetWallet.connect(os.environ, config.stage)
+        if args.action == "status":
+            print(f"Address: {wallet.address}   Chain: {wallet.settings.chain_id}")
+            for sym, bal in wallet.balances().items():
+                print(f"{sym}: {bal:.6f}")
+            return 0
+        tx = wallet.build_wrap(args.amount) if args.action == "wrap" else wallet.build_unwrap(args.amount)
+        print(f"{args.action} {args.amount} on chain {tx['chainId']} from {wallet.address}")
+        if not args.send:
+            print("Dry run. Add --send to sign and broadcast.")
+            return 0
+        tx_hash = wallet.send(tx)
+        print(f"Sent: https://sepolia.basescan.org/tx/0x{tx_hash.removeprefix('0x')}")
+        return 0
+    except (ConfigError, SignerError) as exc:
+        print(f"Wallet refused: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"Could not reach the RPC node: {exc}", file=sys.stderr)
+        return 1
+
+
 def _cmd_status(_: argparse.Namespace) -> int:
     ks = KillSwitch()
     print("KILL SWITCH: " + ("ENGAGED (nothing can trade)" if ks.engaged() else "off"))
@@ -129,7 +159,22 @@ def _cmd_unkill(_: argparse.Namespace) -> int:
     return 0
 
 
+def load_dotenv(path: str = ".env") -> None:
+    """Read KEY=value lines from a local .env into the environment. Real env vars win."""
+    try:
+        lines = open(path).read().splitlines()
+    except OSError:
+        return
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            if value.strip():
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
     parser = argparse.ArgumentParser(prog="agent-trader")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -151,6 +196,12 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--interval", default="1h")
     f.add_argument("--out", default="data")
     f.set_defaults(fn=_cmd_fetch)
+
+    w = sub.add_parser("wallet", help="testnet wallet: status, wrap/unwrap ETH (AGENT_STAGE=2 only)")
+    w.add_argument("action", choices=["status", "wrap", "unwrap"])
+    w.add_argument("--amount", type=float, default=0.001)
+    w.add_argument("--send", action="store_true", help="actually sign and broadcast (default: dry run)")
+    w.set_defaults(fn=_cmd_wallet)
 
     for name, fn, help_ in [("status", _cmd_status, "show kill switch and stage"),
                             ("kill", _cmd_kill, "engage the kill switch"),

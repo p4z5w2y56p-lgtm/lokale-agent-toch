@@ -7,6 +7,7 @@ dependencies = ["anthropic>=0.40"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+testnet = ["web3>=7"]
 
 [project.scripts]
 agent-trader = "agent_trader.cli:main"
