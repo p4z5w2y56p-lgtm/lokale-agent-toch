@@ -40,7 +40,8 @@ class PolicyEngine:
 
         notional = p.quantity * p.price
 
-        if notional > limits.max_trade_pct * pv.equity:
+        # sells only reduce exposure, so a stop-loss must never be blocked by size
+        if p.side is Side.BUY and notional > limits.max_trade_pct * pv.equity:
             reasons.append(
                 f"trade is {notional / pv.equity:.1%} of equity, over max_trade_pct "
                 f"{limits.max_trade_pct:.1%}"

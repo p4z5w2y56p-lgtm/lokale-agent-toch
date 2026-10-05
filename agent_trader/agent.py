@@ -105,8 +105,28 @@ class LLMAgent:
                 s: [round(c.close, 2) for c in hist[-self.history_bars:]]
                 for s, hist in obs.candles.items()
             },
+            "indicators": {s: indicators(hist) for s, hist in obs.candles.items()},
         }
         return self.llm(system, f"<market_data>{json.dumps(data)}</market_data>")
+
+
+def indicators(hist: list) -> dict:
+    """Precomputed numbers for the playbook, so the model never does arithmetic."""
+    closes = [c.close for c in hist[-48:]]
+    if not closes:
+        return {}
+    last, short = closes[-1], closes[-12:]
+    ma_short, ma_long = sum(short) / len(short), sum(closes) / len(closes)
+    high12 = max(short)
+    return {
+        "latest": round(last, 2),
+        "ma_short_12": round(ma_short, 2),
+        "ma_long_48": round(ma_long, 2),
+        "trend_up": last > ma_long and ma_short > ma_long,
+        "pct_below_12_high": round((high12 - last) / high12 * 100, 2),
+        "pct_change_12": round((last / short[0] - 1) * 100, 2),
+        "pct_above_ma_long": round((last / ma_long - 1) * 100, 2),
+    }
 
 
 def parse_trades(raw: str, obs: Observation) -> list[TradeProposal]:
