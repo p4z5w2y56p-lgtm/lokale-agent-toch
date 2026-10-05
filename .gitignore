@@ -1,0 +1,18 @@
+# secrets: never commit these
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+keystore/
+KILL
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+
+# run output
+runs/
