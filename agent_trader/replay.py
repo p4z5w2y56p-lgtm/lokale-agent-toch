@@ -10,6 +10,7 @@ from .journal import Journal
 from .killswitch import KillSwitch
 from .models import Candle, Fill
 from .policy import PolicyEngine
+from . import safety
 from .scorecard import Scorecard, build_scorecard
 
 
@@ -18,6 +19,7 @@ class ReplayResult:
     scorecard: Scorecard
     equity_curve: list[float]
     fills: list[Fill]
+    halted: str | None = None   # why the safety rules tripped the kill switch, if they did
 
 
 def run_replay(
@@ -39,6 +41,7 @@ def run_replay(
     equity_curve: list[float] = []
     fills: list[Fill] = []
     proposals_total = rejected = 0
+    halted_at = None
 
     for i in range(n):
         history = {s: c[: i + 1] for s, c in candles.items()}   # nothing after step i
@@ -47,6 +50,11 @@ def run_replay(
 
         if i % steps_per_day == 0:
             broker.new_day(prices)
+
+        safety.check(config.limits, broker.view(prices), killswitch)
+        if killswitch.engaged() and halted_at is None:
+            halted_at = ts
+            journal.write("kill_switch", ts=ts, reason=killswitch.reason or "manual")
 
         obs = Observation(ts, history, prices, broker.view(prices))
         for proposal in agent.decide(obs):
@@ -79,4 +87,7 @@ def run_replay(
         trades=len(fills), rejected=rejected, proposals_total=proposals_total,
     )
     journal.write("scorecard", scorecard=card)
-    return ReplayResult(card, equity_curve, fills)
+    halted = None
+    if halted_at is not None:
+        halted = f"{killswitch.reason or 'manual'} (at ts={halted_at})"
+    return ReplayResult(card, equity_curve, fills, halted)

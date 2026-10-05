@@ -57,12 +57,12 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     if args.holdout:
         train, test = split(candles, args.holdout)
         print("=== TRAIN (tune the playbook on this) ===")
-        _report(args, config, agent, run_replay(train, agent, config, killswitch, Journal(args.journal)).scorecard)
+        _report(args, config, agent, run_replay(train, agent, config, killswitch, Journal(args.journal)))
         print("\n=== TEST (never tuned on: this is the number that counts) ===")
         agent = _fresh(agent)
-        return _report(args, config, agent, run_replay(test, agent, config, killswitch, Journal(args.journal)).scorecard)
-    result = run_replay(candles, agent, config, killswitch, Journal(args.journal))
-    return _report(args, config, agent, result.scorecard)
+        killswitch = KillSwitch()   # an automatic trip during train must not leak into test
+        return _report(args, config, agent, run_replay(test, agent, config, killswitch, Journal(args.journal)))
+    return _report(args, config, agent, run_replay(candles, agent, config, killswitch, Journal(args.journal)))
 
 
 def _fresh(agent):
@@ -72,7 +72,8 @@ def _fresh(agent):
     return type(agent)()
 
 
-def _report(args, config, agent, card) -> int:
+def _report(args, config, agent, result) -> int:
+    card = result.scorecard
     print(f"Agent: {args.agent}   Stage: {config.stage.name}   Steps: {card.steps}")
     print(f"Return:        {card.total_return:+.2%}")
     print(f"Buy-and-hold:  {card.buy_hold_return:+.2%}")
@@ -81,6 +82,7 @@ def _report(args, config, agent, card) -> int:
     print(f"Trades:        {card.trades}   Win rate: "
           f"{'n/a' if card.win_rate is None else f'{card.win_rate:.0%}'}")
     print(f"Rejected:      {card.proposals_rejected}/{card.proposals_total} proposals")
+    print("Kill switch:   " + (f"TRIPPED - {result.halted}" if result.halted else "not tripped"))
     if getattr(agent, "last_error", None):
         print(f"Agent error:   {agent.last_error}")
     promo = check_promotion(config.stage, card)
@@ -159,6 +161,52 @@ def _cmd_unkill(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_walkforward(args: argparse.Namespace) -> int:
+    from .walkforward import MeteredLLM, format_report, run_walkforward
+
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        print(f"Config refused: {exc}", file=sys.stderr)
+        return 2
+    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    if args.csv:
+        series = {"real CSV": _build_candles(args)}
+        data_label = "REAL data from CSV"
+    else:
+        starts = {"ETH": 2000.0, "WBTC": 60000.0}
+        series = {
+            f"synthetic seed {seed}": {
+                s: synthetic(s, args.steps, seed=seed * 100 + i, start_price=starts.get(s, 100.0))
+                for i, s in enumerate(symbols)
+            }
+            for seed in range(1, args.seeds + 1)
+        }
+        data_label = f"SYNTHETIC random walks, {args.seeds} seeds x {args.steps} bars"
+
+    agents = {"baseline": MomentumBaseline}
+    meter = None
+    llm_agents: frozenset[str] = frozenset()
+    if args.agent == "claude" and args.llm_folds > 0:
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            print("ANTHROPIC_API_KEY is not set.", file=sys.stderr)
+            return 2
+        import anthropic
+
+        raw = AnthropicLLM(anthropic.Anthropic(), os.environ.get("AGENT_MODEL", "claude-haiku-4-5-20251001"))
+        meter = MeteredLLM(raw, max_eur=args.max_eur)
+        agents["claude"] = lambda: LLMAgent(llm=meter, decide_every=args.decide_every)
+        llm_agents = frozenset({"claude"})
+
+    report = run_walkforward(series, agents, config, args.train_bars, args.test_bars,
+                             llm_agents=llm_agents, llm_folds=args.llm_folds, meter=meter)
+    if not report.folds:
+        print("No folds: series too short for --train-bars + --test-bars.", file=sys.stderr)
+        return 2
+    print(format_report(report, data_label, meter))
+    return 0
+
+
 def load_dotenv(path: str = ".env") -> None:
     """Read KEY=value lines from a local .env into the environment. Real env vars win."""
     try:
@@ -196,6 +244,20 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--interval", default="1h")
     f.add_argument("--out", default="data")
     f.set_defaults(fn=_cmd_fetch)
+
+    wf = sub.add_parser("walkforward", help="many rolling train/test windows over many seeds")
+    wf.add_argument("--agent", choices=["baseline", "claude"], default="baseline",
+                    help="baseline: rules only (free). claude: also run Haiku on a few test folds")
+    wf.add_argument("--symbols", default="ETH,WBTC")
+    wf.add_argument("--csv", help="comma separated CSV paths (real data) instead of synthetic seeds")
+    wf.add_argument("--seeds", type=int, default=20)
+    wf.add_argument("--steps", type=int, default=2000, help="synthetic bars per seed")
+    wf.add_argument("--train-bars", type=int, default=480)
+    wf.add_argument("--test-bars", type=int, default=240)
+    wf.add_argument("--llm-folds", type=int, default=3, help="max test folds that call the LLM")
+    wf.add_argument("--decide-every", type=int, default=6)
+    wf.add_argument("--max-eur", type=float, default=0.5, help="estimated LLM spend cap for this run")
+    wf.set_defaults(fn=_cmd_walkforward)
 
     w = sub.add_parser("wallet", help="testnet wallet: status, wrap/unwrap ETH (AGENT_STAGE=2 only)")
     w.add_argument("action", choices=["status", "wrap", "unwrap"])

@@ -32,7 +32,8 @@ class Limits:
     max_trade_pct: float = 0.10        # of equity, per trade
     max_position_pct: float = 0.30     # of equity, per token
     max_trades_per_day: int = 10
-    max_daily_loss_pct: float = 0.05   # halts trading for the day
+    max_daily_loss_pct: float = 0.05   # blocks new buys for the rest of the day
+    max_drawdown_pct: float = 0.15     # from peak equity: trips the kill switch for the run
     max_slippage_bps: float = 50.0
     allowed_symbols: frozenset[str] = field(
         default_factory=lambda: frozenset({"ETH", "WBTC"})

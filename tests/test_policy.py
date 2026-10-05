@@ -37,7 +37,7 @@ def test_reasonable_buy_is_approved(engine):
     assert d.approved, d.reasons
 
 
-def test_kill_switch_blocks_everything(engine, ks):
+def test_kill_switch_blocks_buys(engine, ks):
     ks.engage("test")
     d = engine.evaluate(buy(), view())
     assert not d.approved

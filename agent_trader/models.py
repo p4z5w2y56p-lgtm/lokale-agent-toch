@@ -56,3 +56,4 @@ class PortfolioView:
     equity: float = 0.0
     day_start_equity: float = 0.0
     trades_today: int = 0
+    peak_equity: float = 0.0

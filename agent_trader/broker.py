@@ -21,6 +21,7 @@ class PaperBroker:
         self.closed_pnls: list[float] = []
         self.trades_today = 0
         self.day_start_equity = config.starting_cash
+        self.peak_equity = config.starting_cash
 
     # --- valuation -----------------------------------------------------
     def holdings(self) -> dict[str, float]:
@@ -30,12 +31,15 @@ class PaperBroker:
         return self.cash + sum(p.qty * prices.get(s, 0.0) for s, p in self.positions.items())
 
     def view(self, prices: dict[str, float]) -> PortfolioView:
+        equity = self.equity(prices)
+        self.peak_equity = max(self.peak_equity, equity)
         return PortfolioView(
             cash=self.cash,
             holdings=self.holdings(),
-            equity=self.equity(prices),
+            equity=equity,
             day_start_equity=self.day_start_equity,
             trades_today=self.trades_today,
+            peak_equity=self.peak_equity,
         )
 
     def new_day(self, prices: dict[str, float]) -> None:

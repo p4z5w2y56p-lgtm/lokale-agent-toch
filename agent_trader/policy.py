@@ -9,6 +9,7 @@ import math
 
 from .config import Config, Stage
 from .killswitch import KillSwitch
+from .safety import safety_reasons
 from .models import Decision, PortfolioView, Side, TradeProposal
 
 
@@ -21,8 +22,9 @@ class PolicyEngine:
         limits = self.config.limits
         reasons: list[str] = []
 
-        if self.killswitch.engaged():
-            reasons.append("kill switch is engaged")
+        # Hard safety rules block new risk (buys) only; selling to cut risk stays allowed.
+        if p.side is Side.BUY:
+            reasons.extend(safety_reasons(limits, pv, self.killswitch))
 
         if self.config.stage >= Stage.MAINNET_CAPPED and not self.config.mainnet_unlocked:
             reasons.append("stage is locked (real-money stages need an explicit human unlock)")
@@ -48,14 +50,6 @@ class PolicyEngine:
 
         if pv.trades_today >= limits.max_trades_per_day:
             reasons.append(f"already {pv.trades_today} trades today, over max_trades_per_day")
-
-        if pv.day_start_equity > 0:
-            loss = (pv.day_start_equity - pv.equity) / pv.day_start_equity
-            if loss > limits.max_daily_loss_pct:
-                reasons.append(
-                    f"down {loss:.1%} today, over max_daily_loss_pct "
-                    f"{limits.max_daily_loss_pct:.1%}: trading halted for the day"
-                )
 
         if p.quoted_slippage_bps > limits.max_slippage_bps:
             reasons.append(
