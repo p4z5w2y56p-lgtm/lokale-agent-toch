@@ -7,6 +7,7 @@ import sys
 
 from .agent import LLMAgent, MomentumBaseline
 from .config import ConfigError, load_config
+from .costs import CostModel, format_cost_report, summarize_costs
 from .data import align, fetch_binance, load_csv, save_csv, split, synthetic
 from .journal import Journal
 from .killswitch import KillSwitch
@@ -32,7 +33,10 @@ def _build_candles(args: argparse.Namespace) -> dict:
 def _cmd_replay(args: argparse.Namespace) -> int:
     try:
         config = load_config()
-    except ConfigError as exc:
+        config = CostModel.from_env(
+            {**os.environ, **_cost_overrides(args)}
+        ).apply(config)
+    except (ConfigError, ValueError) as exc:
         print(f"Config refused: {exc}", file=sys.stderr)
         return 2
     candles = _build_candles(args)
@@ -57,12 +61,12 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     if args.holdout:
         train, test = split(candles, args.holdout)
         print("=== TRAIN (tune the playbook on this) ===")
-        _report(args, config, agent, run_replay(train, agent, config, killswitch, Journal(args.journal)).scorecard)
+        _report(args, config, agent, run_replay(train, agent, config, killswitch, Journal(args.journal)))
         print("\n=== TEST (never tuned on: this is the number that counts) ===")
         agent = _fresh(agent)
-        return _report(args, config, agent, run_replay(test, agent, config, killswitch, Journal(args.journal)).scorecard)
+        return _report(args, config, agent, run_replay(test, agent, config, killswitch, Journal(args.journal)))
     result = run_replay(candles, agent, config, killswitch, Journal(args.journal))
-    return _report(args, config, agent, result.scorecard)
+    return _report(args, config, agent, result)
 
 
 def _fresh(agent):
@@ -72,12 +76,23 @@ def _fresh(agent):
     return type(agent)()
 
 
-def _report(args, config, agent, card) -> int:
+def _cost_overrides(args: argparse.Namespace) -> dict[str, str]:
+    out = {}
+    if getattr(args, "fee_bps", None) is not None:
+        out["TAKER_FEE_BPS"] = str(args.fee_bps)
+    if getattr(args, "slippage_bps", None) is not None:
+        out["SLIPPAGE_BPS"] = str(args.slippage_bps)
+    return out
+
+
+def _report(args, config, agent, result) -> int:
+    card = result.scorecard
     print(f"Agent: {args.agent}   Stage: {config.stage.name}   Steps: {card.steps}")
     print(f"Return:        {card.total_return:+.2%}")
     print(f"Buy-and-hold:  {card.buy_hold_return:+.2%}")
     print(f"Excess:        {card.excess_return:+.2%}")
     print(f"Max drawdown:  {card.max_drawdown:.2%}")
+    print(format_cost_report(summarize_costs(result.fills, result.equity_curve, config), config))
     print(f"Trades:        {card.trades}   Win rate: "
           f"{'n/a' if card.win_rate is None else f'{card.win_rate:.0%}'}")
     print(f"Rejected:      {card.proposals_rejected}/{card.proposals_total} proposals")
@@ -186,6 +201,10 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--seed", type=int, default=1)
     r.add_argument("--decide-every", type=int, default=6, help="claude/gemini: call the model every N bars")
     r.add_argument("--journal", default="runs/journal.jsonl")
+    r.add_argument("--fee-bps", type=float, default=None,
+                   help="taker fee per side in bps (default 10 = 0.1%%; env TAKER_FEE_BPS)")
+    r.add_argument("--slippage-bps", type=float, default=None,
+                   help="slippage per fill in bps (default 5; env SLIPPAGE_BPS)")
     r.add_argument("--holdout", type=float, default=0.0,
                    help="fraction of the newest data kept for an out-of-sample test, e.g. 0.3")
     r.set_defaults(fn=_cmd_replay)

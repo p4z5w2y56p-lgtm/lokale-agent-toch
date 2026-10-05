@@ -44,8 +44,8 @@ class Config:
     stage: Stage = Stage.REPLAY
     limits: Limits = field(default_factory=Limits)
     starting_cash: float = 1000.0
-    fee_bps: float = 30.0              # typical DEX pool fee (0.30%)
-    slippage_bps: float = 10.0         # simulated slippage in the paper broker
+    fee_bps: float = 10.0              # taker fee per side (0.10%); see costs.py
+    slippage_bps: float = 5.0          # simulated slippage per fill
     mainnet_unlocked: bool = False
 
 
