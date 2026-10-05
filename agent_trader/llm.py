@@ -17,7 +17,7 @@ class LLMError(Exception):
 @dataclass
 class AnthropicLLM:
     client: Any                      # anthropic.Anthropic() or a fake
-    model: str = "claude-sonnet-5-5"
+    model: str = "claude-haiku-4-5-20251001"
     max_tokens: int = 600
 
     def __call__(self, system: str, user: str) -> str:
