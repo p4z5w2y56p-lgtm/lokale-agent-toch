@@ -183,6 +183,24 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_train(args: argparse.Namespace) -> int:
+    import anthropic
+
+    from .train import train
+    from .usage import UsageTracker
+
+    usage = UsageTracker.from_env()
+    client = anthropic.Anthropic()
+    model = os.environ.get("AGENT_MODEL", "claude-haiku-4-5-20251001")
+
+    def make_llm(tag, max_tokens=600):
+        return AnthropicLLM(client, model, max_tokens=max_tokens, usage=usage, tag=f"train {tag}")
+
+    res = train(_build_candles(args), make_llm, usage, target=args.target, rounds=args.rounds)
+    print(f"Stopped: {res['stop']}  best round: {res['best_round']}  spent: {res['spent_eur']:.2f} EUR")
+    return 0
+
+
 def _cmd_usage(_: argparse.Namespace) -> int:
     from .usage import UsageTracker
 
@@ -255,6 +273,13 @@ def main(argv: list[str] | None = None) -> int:
     sw.add_argument("--window", type=int, default=240)
     sw.add_argument("--out", default="runs/sweep.json")
     sw.set_defaults(fn=_cmd_sweep)
+
+    t = sub.add_parser("train", help="fast parallel training until a profit target on test windows, or the budget cap")
+    t.add_argument("--csv", required=True)
+    t.add_argument("--symbols", default="ETH,WBTC")
+    t.add_argument("--target", type=float, default=0.10)
+    t.add_argument("--rounds", type=int, default=20)
+    t.set_defaults(fn=_cmd_train)
 
     u = sub.add_parser("usage", help="show estimated model spend vs the budget cap")
     u.set_defaults(fn=_cmd_usage)
