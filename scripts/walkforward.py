@@ -11,6 +11,7 @@ import json
 import os
 import statistics
 import sys
+import time
 from dataclasses import replace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -24,6 +25,9 @@ from agent_trader.replay import run_replay  # noqa: E402
 
 # Haiku 4.5 list price, USD per million tokens; EUR at ~0.92.
 PRICE_IN, PRICE_OUT, USD_EUR = 1.0, 5.0, 0.92
+# Shared meter across threads; hard stop when the project total reaches BUDGET_EUR.
+USAGE_LOG = os.environ.get("USAGE_LOG")
+SHARED_CAP = float(os.environ.get("BUDGET_EUR", "5"))
 
 
 class BudgetExceeded(Exception):
@@ -34,20 +38,35 @@ class MeteredHaiku:
     def __init__(self, client, budget_eur, model="claude-haiku-4-5-20251001"):
         self.client, self.budget, self.model = client, budget_eur, model
         self.calls = self.tin = self.tout = 0
+        self.stopped = False
 
     @property
     def eur(self):
         return (self.tin * PRICE_IN + self.tout * PRICE_OUT) / 1e6 * USD_EUR
 
     def __call__(self, system, user):
-        if self.eur >= self.budget:
-            raise BudgetExceeded(f"budget {self.budget:.2f} EUR reached")
+        if self.eur >= self.budget or shared_total() >= SHARED_CAP:
+            self.stopped = True
+            raise BudgetExceeded(f"budget reached (mine {self.eur:.2f}, shared {shared_total():.2f} EUR)")
         msg = self.client.messages.create(model=self.model, max_tokens=600, system=system,
                                           messages=[{"role": "user", "content": user}])
         self.calls += 1
         self.tin += msg.usage.input_tokens
         self.tout += msg.usage.output_tokens
+        u = msg.usage
+        cost = (u.input_tokens * PRICE_IN + u.output_tokens * PRICE_OUT) / 1e6 * USD_EUR
+        if USAGE_LOG:
+            with open(USAGE_LOG, "a") as fh:
+                fh.write(json.dumps({"ts": time.time(), "model": self.model, "in": u.input_tokens,
+                                     "out": u.output_tokens, "eur": round(cost, 6), "tag": "walkforward-real"}) + "\n")
         return "".join(getattr(b, "text", "") for b in msg.content)
+
+
+def shared_total():
+    if not USAGE_LOG or not os.path.exists(USAGE_LOG):
+        return 0.0
+    with open(USAGE_LOG) as fh:
+        return sum(json.loads(line).get("eur", 0) for line in fh if line.strip())
 
 
 def windows(candles, size, warmup):
@@ -95,13 +114,15 @@ def main():
         base = run_replay(w, MomentumBaseline(), config, ks, Journal(None)).scorecard
         row.update(bh=base.buy_hold_return, base=base.total_return, base_trades=base.trades)
         if llm and i in haiku_idx:
-            try:
-                h = run_replay(w, LLMAgent(llm=llm, decide_every=a.decide_every), config, ks, Journal(None)).scorecard
+            if llm.stopped:
+                print("STOP: budget reached, skipping Haiku window", i)
+            else:
+                ag = LLMAgent(llm=llm, decide_every=a.decide_every)
+                h = run_replay(w, ag, config, ks, Journal(None)).scorecard
+                if ag.last_error:
+                    row["haiku_error"] = ag.last_error[:120]
                 row.update(haiku=h.total_return, haiku_trades=h.trades, haiku_dd=h.max_drawdown,
-                           haiku_rejected=h.proposals_rejected)
-            except BudgetExceeded as e:
-                print("STOP:", e)
-                llm.budget = -1  # no more Haiku windows
+                           haiku_rejected=h.proposals_rejected, haiku_calls_total=llm.calls)
         rows.append(row)
         print(json.dumps({k2: (round(v, 4) if isinstance(v, float) else v) for k2, v in row.items()}), flush=True)
 
