@@ -1,4 +1,4 @@
-"""Command line: replay, status, kill, unkill."""
+"""Command line: replay, fetch, status, kill, unkill."""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +7,7 @@ import sys
 
 from .agent import LLMAgent, MomentumBaseline
 from .config import ConfigError, load_config
-from .data import load_csv, synthetic
+from .data import align, fetch_binance, load_csv, save_csv, split, synthetic
 from .journal import Journal
 from .killswitch import KillSwitch
 from .llm import AnthropicLLM, GeminiLLM
@@ -21,7 +21,7 @@ def _build_candles(args: argparse.Namespace) -> dict:
         paths = [p.strip() for p in args.csv.split(",")]
         if len(paths) != len(symbols):
             sys.exit("--csv needs one file per symbol, comma separated, same order as --symbols")
-        return {s: load_csv(p, s) for s, p in zip(symbols, paths)}
+        return align({s: load_csv(p, s) for s, p in zip(symbols, paths)})
     starts = {"ETH": 2000.0, "WBTC": 60000.0}
     return {
         s: synthetic(s, args.steps, seed=args.seed + i, start_price=starts.get(s, 100.0))
@@ -54,8 +54,25 @@ def _cmd_replay(args: argparse.Namespace) -> int:
         agent = MomentumBaseline()
 
     killswitch = KillSwitch()
+    if args.holdout:
+        train, test = split(candles, args.holdout)
+        print("=== TRAIN (tune the playbook on this) ===")
+        _report(args, config, agent, run_replay(train, agent, config, killswitch, Journal(args.journal)).scorecard)
+        print("\n=== TEST (never tuned on: this is the number that counts) ===")
+        agent = _fresh(agent)
+        return _report(args, config, agent, run_replay(test, agent, config, killswitch, Journal(args.journal)).scorecard)
     result = run_replay(candles, agent, config, killswitch, Journal(args.journal))
-    card = result.scorecard
+    return _report(args, config, agent, result.scorecard)
+
+
+def _fresh(agent):
+    """New agent with the same settings, so the test run carries no state from training."""
+    if isinstance(agent, LLMAgent):
+        return LLMAgent(llm=agent.llm, decide_every=agent.decide_every)
+    return type(agent)()
+
+
+def _report(args, config, agent, card) -> int:
     print(f"Agent: {args.agent}   Stage: {config.stage.name}   Steps: {card.steps}")
     print(f"Return:        {card.total_return:+.2%}")
     print(f"Buy-and-hold:  {card.buy_hold_return:+.2%}")
@@ -70,6 +87,23 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     print(f"\nPromotion: {'ELIGIBLE' if promo.eligible else 'NOT READY'} - {promo.note}")
     for failure in promo.failures:
         print(f"  - {failure}")
+    return 0
+
+
+def _cmd_fetch(args: argparse.Namespace) -> int:
+    from datetime import datetime, timezone
+
+    end = datetime.now(timezone.utc)
+    start_ms = int(end.timestamp() * 1000) - args.days * 86_400_000
+    for sym in [s.strip().upper() for s in args.symbols.split(",") if s.strip()]:
+        try:
+            candles = fetch_binance(sym, start_ms, int(end.timestamp() * 1000), args.interval)
+        except OSError as exc:
+            print(f"{sym}: download failed ({exc})", file=sys.stderr)
+            return 1
+        path = f"{args.out}/{sym.lower()}_{args.interval}.csv"
+        save_csv(candles, path)
+        print(f"{sym}: {len(candles)} candles -> {path}")
     return 0
 
 
@@ -107,7 +141,16 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--seed", type=int, default=1)
     r.add_argument("--decide-every", type=int, default=6, help="claude/gemini: call the model every N bars")
     r.add_argument("--journal", default="runs/journal.jsonl")
+    r.add_argument("--holdout", type=float, default=0.0,
+                   help="fraction of the newest data kept for an out-of-sample test, e.g. 0.3")
     r.set_defaults(fn=_cmd_replay)
+
+    f = sub.add_parser("fetch", help="download real hourly candles (public Binance data, no key)")
+    f.add_argument("--symbols", default="ETH,WBTC")
+    f.add_argument("--days", type=int, default=365)
+    f.add_argument("--interval", default="1h")
+    f.add_argument("--out", default="data")
+    f.set_defaults(fn=_cmd_fetch)
 
     for name, fn, help_ in [("status", _cmd_status, "show kill switch and stage"),
                             ("kill", _cmd_kill, "engage the kill switch"),

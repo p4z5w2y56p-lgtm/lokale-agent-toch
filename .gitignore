@@ -16,3 +16,6 @@ __pycache__/
 
 # run output
 runs/
+
+# downloaded market data
+data/
