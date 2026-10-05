@@ -92,3 +92,11 @@ baseline is the control: the LLM has to beat it, and beat plain buy-and-hold, to
 2. Live paper trading feed (stage 1).
 3. Testnet swaps on Base Sepolia (stage 2): needs an RPC URL and a throwaway wallet with faucet funds.
 4. Only after weeks of clean results: a human decision about stage 3.
+
+## OMIN: usage cap, capability sweep, control panel
+
+The bot is called **OMIN**.
+
+- Every Claude call is logged to `runs/usage.jsonl` (tokens and estimated euro, no key, no prompts). Calls are refused once `BUDGET_EUR` (default 5) is reached. `agent-trader usage` shows the total. The real bill is at console.anthropic.com under Settings, Billing.
+- `agent-trader sweep --csv data/eth_1h.csv,data/wbtc_1h.csv` runs Haiku, the momentum baseline and buy-and-hold over four real regimes (bull, bear, sideways, high volatility), three decision frequencies and two risk settings, and writes `runs/sweep.json`.
+- `panel/index.html` is the control panel (built from `panel/App.tsx` + `panel/data.json` with React, Tailwind and Parcel into one file). It is read only and cannot sign anything.

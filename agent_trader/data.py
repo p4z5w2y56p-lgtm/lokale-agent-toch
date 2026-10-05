@@ -1,6 +1,7 @@
 """Candle sources: a CSV loader and a seeded synthetic generator."""
 from __future__ import annotations
 
+import os
 import csv
 import math
 import random
@@ -54,7 +55,8 @@ def synthetic(
 
 
 BINANCE_PAIRS = {"ETH": "ETHUSDT", "WBTC": "BTCUSDT", "BTC": "BTCUSDT"}
-BINANCE_URL = "https://api.binance.com/api/v3/klines"
+# data-api.binance.vision is Binance's public market-data mirror; api.binance.com answers 451 from US cloud IPs.
+BINANCE_URL = os.environ.get("BINANCE_URL", "https://data-api.binance.vision/api/v3/klines")
 
 
 def fetch_binance(

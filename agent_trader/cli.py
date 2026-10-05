@@ -42,7 +42,16 @@ def _cmd_replay(args: argparse.Namespace) -> int:
             return 2
         import anthropic
 
-        llm = AnthropicLLM(anthropic.Anthropic(), os.environ.get("AGENT_MODEL", "claude-sonnet-5-5"))
+        from .usage import BudgetExceeded, UsageTracker
+
+        usage = UsageTracker.from_env()
+        try:
+            usage.check()
+        except BudgetExceeded as exc:
+            print(f"Refused: {exc}", file=sys.stderr)
+            return 2
+        llm = AnthropicLLM(anthropic.Anthropic(), os.environ.get("AGENT_MODEL", "claude-haiku-4-5-20251001"),
+                           usage=usage, tag="replay")
         agent = LLMAgent(llm=llm, decide_every=args.decide_every)
     elif args.agent == "gemini":
         if not os.environ.get("GEMINI_API_KEY"):
@@ -147,6 +156,61 @@ def _cmd_status(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sweep(args: argparse.Namespace) -> int:
+    import anthropic
+
+    from .sweep import sweep
+    from .usage import BudgetExceeded, UsageTracker
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("ANTHROPIC_API_KEY is not set.", file=sys.stderr)
+        return 2
+    usage = UsageTracker.from_env()
+    try:
+        usage.check()
+    except BudgetExceeded as exc:
+        print(f"Refused: {exc}", file=sys.stderr)
+        return 2
+    candles = _build_candles(args)
+    client = anthropic.Anthropic()
+    model = os.environ.get("AGENT_MODEL", "claude-haiku-4-5-20251001")
+    result = sweep(candles, lambda tag: AnthropicLLM(client, model, usage=usage, tag=f"sweep {tag}"),
+                   window=args.window, out=args.out)
+    for r in result["rows"]:
+        print(f"{r['regime']:9} {r['risk']:6} {r['agent']:8} every={r['decide_every']!s:4} "
+              f"ret={r['total_return']:+.2%} bh={r['buy_hold_return']:+.2%} trades={r['trades']}")
+    print(f"Spend so far: {usage.spent():.3f} of {usage.budget_eur:.2f} EUR")
+    return 0
+
+
+def _cmd_train(args: argparse.Namespace) -> int:
+    import anthropic
+
+    from .train import train
+    from .usage import UsageTracker
+
+    usage = UsageTracker.from_env()
+    client = anthropic.Anthropic()
+    model = os.environ.get("AGENT_MODEL", "claude-haiku-4-5-20251001")
+
+    def make_llm(tag, max_tokens=600):
+        return AnthropicLLM(client, model, max_tokens=max_tokens, usage=usage, tag=f"train {tag}")
+
+    res = train(_build_candles(args), make_llm, usage, target=args.target, rounds=args.rounds)
+    print(f"Stopped: {res['stop']}  best round: {res['best_round']}  spent: {res['spent_eur']:.2f} EUR")
+    return 0
+
+
+def _cmd_usage(_: argparse.Namespace) -> int:
+    from .usage import UsageTracker
+
+    t = UsageTracker.from_env()
+    spent = t.spent()
+    print(f"Estimated spend: {spent:.3f} EUR of {t.budget_eur:.2f} EUR budget ({spent / t.budget_eur:.0%})")
+    print("Real bill: console.anthropic.com -> Settings -> Billing")
+    return 0
+
+
 def _cmd_kill(_: argparse.Namespace) -> int:
     KillSwitch().engage("manual via cli")
     print("Kill switch ENGAGED. Run `agent-trader unkill` to release it.")
@@ -202,6 +266,23 @@ def main(argv: list[str] | None = None) -> int:
     w.add_argument("--amount", type=float, default=0.001)
     w.add_argument("--send", action="store_true", help="actually sign and broadcast (default: dry run)")
     w.set_defaults(fn=_cmd_wallet)
+
+    sw = sub.add_parser("sweep", help="capability sweep: Haiku vs baseline vs buy-and-hold across regimes")
+    sw.add_argument("--csv", required=True, help="comma separated CSV paths, one per symbol")
+    sw.add_argument("--symbols", default="ETH,WBTC")
+    sw.add_argument("--window", type=int, default=240)
+    sw.add_argument("--out", default="runs/sweep.json")
+    sw.set_defaults(fn=_cmd_sweep)
+
+    t = sub.add_parser("train", help="fast parallel training until a profit target on test windows, or the budget cap")
+    t.add_argument("--csv", required=True)
+    t.add_argument("--symbols", default="ETH,WBTC")
+    t.add_argument("--target", type=float, default=0.10)
+    t.add_argument("--rounds", type=int, default=20)
+    t.set_defaults(fn=_cmd_train)
+
+    u = sub.add_parser("usage", help="show estimated model spend vs the budget cap")
+    u.set_defaults(fn=_cmd_usage)
 
     for name, fn, help_ in [("status", _cmd_status, "show kill switch and stage"),
                             ("kill", _cmd_kill, "engage the kill switch"),
