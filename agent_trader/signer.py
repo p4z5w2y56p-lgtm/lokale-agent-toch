@@ -114,6 +114,10 @@ class TestnetWallet:
     def send(self, tx: dict) -> str:
         if int(tx.get("chainId", -1)) != self.settings.chain_id:
             raise SignerError("Transaction chainId does not match the testnet. Refusing to sign.")
+        if int(tx.get("value", 0)) > _to_wei(MAX_TX_ETH):
+            raise SignerError(f"Transaction value is above the {MAX_TX_ETH} ETH per-transaction cap. Refusing to sign.")
+        if str(tx.get("to", "")).lower() != self.weth.address.lower():
+            raise SignerError("Transaction is not to the WETH contract. Refusing to sign.")
         signed = self.account.sign_transaction(tx)
         tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
         return tx_hash.hex() if hasattr(tx_hash, "hex") else str(tx_hash)
